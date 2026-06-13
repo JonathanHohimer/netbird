@@ -4,7 +4,9 @@ package restrict
 
 import (
 	"net/netip"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -59,6 +61,9 @@ type Filter struct {
 	BlockedCountries []string
 	CrowdSec         CrowdSecChecker
 	CrowdSecMode     CrowdSecMode
+	// AllowLocal, when true, exempts RFC 1918 private addresses from country
+	// restrictions. Set via the NB_PROXY_GEOLOCATION_ALLOW_LOCAL env variable.
+	AllowLocal bool
 }
 
 // FilterConfig holds the raw configuration for building a Filter.
@@ -89,6 +94,7 @@ func ParseFilter(cfg FilterConfig) *Filter {
 	f := &Filter{
 		AllowedCountries: normalizeCountryCodes(cfg.AllowedCountries),
 		BlockedCountries: normalizeCountryCodes(cfg.BlockedCountries),
+		AllowLocal:       allowLocalByEnv(logger),
 	}
 	if hasCS {
 		f.CrowdSec = cfg.CrowdSec
@@ -111,6 +117,19 @@ func ParseFilter(cfg FilterConfig) *Filter {
 		f.BlockedCIDRs = append(f.BlockedCIDRs, prefix.Masked())
 	}
 	return f
+}
+
+func allowLocalByEnv(logger *log.Entry) bool {
+	val := os.Getenv(geolocation.EnvAllowLocal)
+	if val == "" {
+		return false
+	}
+	allow, err := strconv.ParseBool(val)
+	if err != nil {
+		logger.Warnf("parse %s=%q: %v", geolocation.EnvAllowLocal, val, err)
+		return false
+	}
+	return allow
 }
 
 func normalizeCountryCodes(codes []string) []string {
@@ -249,6 +268,10 @@ func (f *Filter) checkCIDR(addr netip.Addr) Verdict {
 
 func (f *Filter) checkCountry(addr netip.Addr, geo GeoResolver) Verdict {
 	if len(f.AllowedCountries) == 0 && len(f.BlockedCountries) == 0 {
+		return Allow
+	}
+
+	if f.AllowLocal && addr.IsPrivate() {
 		return Allow
 	}
 

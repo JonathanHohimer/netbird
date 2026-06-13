@@ -9,6 +9,11 @@ import (
 	"github.com/netbirdio/netbird/proxy/internal/geolocation"
 )
 
+func setEnvAllowLocal(t *testing.T, val string) {
+	t.Helper()
+	t.Setenv(geolocation.EnvAllowLocal, val)
+}
+
 type mockGeo struct {
 	countries map[string]string
 }
@@ -551,4 +556,61 @@ func TestFilter_HasRestrictions_CrowdSec(t *testing.T) {
 	// because Check() will fail-closed with DenyCrowdSecUnavailable.
 	f2 := ParseFilter(FilterConfig{CrowdSec: nil, CrowdSecMode: CrowdSecEnforce})
 	assert.True(t, f2.HasRestrictions())
+}
+
+// TestFilter_AllowLocal_* exercises NB_PROXY_GEOLOCATION_ALLOW_LOCAL behaviour.
+// Private RFC 1918 ranges (10/8, 172.16/12, 192.168/16) must bypass country
+// restrictions when the env var is set; public IPs remain subject to geo rules.
+
+func TestFilter_AllowLocal_CountryAllowlist(t *testing.T) {
+	setEnvAllowLocal(t, "true")
+	geo := newMockGeo(map[string]string{
+		"8.8.8.8": "US",
+	})
+	f := ParseFilter(FilterConfig{AllowedCountries: []string{"US"}})
+	assert.True(t, f.AllowLocal, "AllowLocal should be set from env")
+
+	// Private class-A, -B, -C addresses bypass the allowlist.
+	assert.Equal(t, Allow, f.Check(netip.MustParseAddr("10.1.2.3"), geo), "class A private")
+	assert.Equal(t, Allow, f.Check(netip.MustParseAddr("172.16.0.1"), geo), "class B private")
+	assert.Equal(t, Allow, f.Check(netip.MustParseAddr("192.168.1.100"), geo), "class C private")
+
+	// Public IPs still go through country check.
+	assert.Equal(t, Allow, f.Check(netip.MustParseAddr("8.8.8.8"), geo), "public US in allowlist")
+	assert.Equal(t, DenyCountry, f.Check(netip.MustParseAddr("1.2.3.4"), geo), "public unknown country denied")
+}
+
+func TestFilter_AllowLocal_CountryBlocklist(t *testing.T) {
+	setEnvAllowLocal(t, "true")
+	geo := newMockGeo(map[string]string{
+		"10.1.2.3":    "CN", // private but we pretend geo returns a code
+		"192.168.1.1": "CN",
+		"1.2.3.4":     "CN",
+	})
+	f := ParseFilter(FilterConfig{BlockedCountries: []string{"CN"}})
+
+	// Private addresses are exempt even if geo would resolve them to a blocked country.
+	assert.Equal(t, Allow, f.Check(netip.MustParseAddr("10.1.2.3"), geo), "class A private bypasses blocklist")
+	assert.Equal(t, Allow, f.Check(netip.MustParseAddr("192.168.1.1"), geo), "class C private bypasses blocklist")
+
+	// Public IPs are still subject to the blocklist.
+	assert.Equal(t, DenyCountry, f.Check(netip.MustParseAddr("1.2.3.4"), geo), "public CN blocked")
+}
+
+func TestFilter_AllowLocal_Disabled(t *testing.T) {
+	// Without the env var, private IPs are subject to country restrictions as usual.
+	geo := newMockGeo(map[string]string{
+		"8.8.8.8": "US",
+	})
+	f := ParseFilter(FilterConfig{AllowedCountries: []string{"US"}})
+	assert.False(t, f.AllowLocal, "AllowLocal should be false when env var is unset")
+
+	assert.Equal(t, DenyCountry, f.Check(netip.MustParseAddr("10.1.2.3"), geo),
+		"private IP denied by country allowlist when AllowLocal is off")
+}
+
+func TestFilter_AllowLocal_InvalidEnvValue(t *testing.T) {
+	setEnvAllowLocal(t, "notabool")
+	f := ParseFilter(FilterConfig{AllowedCountries: []string{"US"}})
+	assert.False(t, f.AllowLocal, "invalid env value should default to false")
 }
