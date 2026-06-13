@@ -16,6 +16,11 @@ const (
 	// EnvDisable disables geolocation lookups entirely when set to a truthy value.
 	EnvDisable = "NB_PROXY_DISABLE_GEOLOCATION"
 
+	// EnvAllowLocal, when set to a truthy value, allows RFC 1918 private addresses
+	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) to bypass country-based
+	// restrictions regardless of any configured allow- or block-list.
+	EnvAllowLocal = "NB_PROXY_GEOLOCATION_ALLOW_LOCAL"
+
 	mmdbGlob = "GeoLite2-City_*.mmdb"
 )
 
